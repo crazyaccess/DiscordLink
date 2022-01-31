@@ -1,3 +1,4 @@
+
 # This workflow will build a Java project with Maven
 # For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-maven
 
@@ -24,13 +25,11 @@ jobs:
         distribution: 'adopt'
     
     - name: Build with Maven
-      run: |
-        mvn -B package --file pom.xml
+      run: mvn -B package --file pom.xml
       
     - name: Get artifact name
       id: getartifactname
-      run: |
-        echo "::set-output name=file::$(ls target/DiscordLink-*.jar)"
+      run: echo "::set-output name=file::$(ls target/DiscordLink-*.jar)"
       
     - uses: actions/upload-artifact@v2
       with:
