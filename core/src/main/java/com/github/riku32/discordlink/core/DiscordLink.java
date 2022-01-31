@@ -2,19 +2,25 @@ package com.github.riku32.discordlink.core;
 
 import com.github.riku32.discordlink.core.bot.Bot;
 import com.github.riku32.discordlink.core.commands.CommandLink;
-import com.github.riku32.discordlink.core.database.managers.PlayerManager;
-import com.github.riku32.discordlink.core.database.sources.SqliteDB;
-import com.github.riku32.discordlink.core.framework.dependency.DependencyNotFoundException;
+import com.github.riku32.discordlink.core.config.Config;
+import com.github.riku32.discordlink.core.database.PlayerInfo;
+import com.github.riku32.discordlink.core.database.Verification;
 import com.github.riku32.discordlink.core.framework.dependency.Injector;
-import com.github.riku32.discordlink.core.framework.eventbus.ListenerRegisterException;
 import com.github.riku32.discordlink.core.listeners.PlayerStatusListener;
 import com.github.riku32.discordlink.core.listeners.MoveListener;
 import com.github.riku32.discordlink.core.locale.Locale;
 import com.github.riku32.discordlink.core.framework.PlatformPlayer;
 import com.github.riku32.discordlink.core.framework.PlatformPlugin;
-import com.github.riku32.discordlink.core.framework.command.CommandCompileException;
 import com.github.riku32.discordlink.core.framework.command.CompiledCommand;
-import com.github.riku32.discordlink.core.util.MojangAPI;
+import com.google.common.collect.ImmutableList;
+import io.ebean.Database;
+import io.ebean.DatabaseFactory;
+import io.ebean.Transaction;
+import io.ebean.annotation.Platform;
+import io.ebean.config.DatabaseConfig;
+import io.ebean.datasource.DataSourceConfig;
+import io.ebean.migration.MigrationConfig;
+import io.ebean.migration.MigrationRunner;
 
 import javax.security.auth.login.LoginException;
 import java.io.File;
@@ -22,12 +28,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.SQLException;
 import java.util.*;
+import java.util.logging.Logger;
 
 public class DiscordLink {
+    public static Logger logger;
+
     private final PlatformPlugin plugin;
-    private SqliteDB sqliteDB;
+    private Database database;
     private Config config;
     private Locale locale;
     private Bot bot;
@@ -36,15 +44,16 @@ public class DiscordLink {
 
     public DiscordLink(PlatformPlugin plugin) {
         this.plugin = plugin;
+        DiscordLink.logger = plugin.getLogger();
 
         File configFile = new File(plugin.getDataDirectory(), "config.yml");
         if (!configFile.exists()) {
             try {
                 Files.copy(Path.of(Objects.requireNonNull(getClass().getResource("config.yml")).getPath()), configFile.toPath());
-                plugin.getLogger().severe("Created a new configuration file, please fill in the file");
+                logger.severe("Created a new configuration file, please fill in the file");
             } catch (IOException e) {
-                plugin.getLogger().severe("Unable to create configuration file");
-                plugin.getLogger().severe(e.getMessage());
+                logger.severe("Unable to create configuration file");
+                logger.severe(e.getMessage());
             }
             disable(false);
             return;
@@ -53,16 +62,7 @@ public class DiscordLink {
         try {
             this.config = new Config(new String(Files.readAllBytes(configFile.toPath())));
         } catch (NoSuchElementException | IOException e) {
-            plugin.getLogger().severe(e.getMessage());
-            disable(false);
-            return;
-        }
-
-        try {
-            sqliteDB = new SqliteDB(plugin.getDataDirectory());
-        } catch (SQLException e) {
-            plugin.getLogger().severe("Unable to create/start the database");
-            plugin.getLogger().severe(e.getMessage());
+            logger.severe(e.getMessage());
             disable(false);
             return;
         }
@@ -79,6 +79,13 @@ public class DiscordLink {
             return;
         }
 
+        // Initialize database
+        database = databaseInit();
+        if (database == null) {
+            disable(false);
+            return;
+        }
+
         try {
             bot = new Bot(this);
         } catch (LoginException | InterruptedException e) {
@@ -87,23 +94,15 @@ public class DiscordLink {
             return;
         }
 
-        Injector injector = new Injector();
-        injector.registerDependency(PlatformPlugin.class, this.plugin);
-        injector.registerNamedDependency("frozenPlayers", frozenPlayers);
-        injector.registerDependency(PlayerManager.class, sqliteDB);
-        injector.registerDependency(Config.class, config);
-        injector.registerDependency(Locale.class, locale);
-        injector.registerDependency(Bot.class, bot);
+        Injector injector = createInjector();
 
         try {
             PlayerStatusListener playerStatusListener = new PlayerStatusListener();
             injector.injectDependencies(playerStatusListener);
-
             plugin.getEventBus().register(playerStatusListener);
+
             plugin.getEventBus().register(new MoveListener(frozenPlayers));
-        } catch (ListenerRegisterException
-                | DependencyNotFoundException
-                | IllegalAccessException e) {
+        } catch (Exception e) {
             e.printStackTrace();
             disable(false);
             return;
@@ -114,12 +113,76 @@ public class DiscordLink {
             injector.injectDependencies(commandLink);
 
             plugin.registerCommand(new CompiledCommand(commandLink));
-        } catch (CommandCompileException
-                | DependencyNotFoundException
-                | IllegalAccessException e) {
+        } catch (Exception e) {
             e.printStackTrace();
             disable(false);
         }
+    }
+
+    private Database databaseInit() {
+        // We need to load the class here to be able to use it
+        // For some reason it does not work without this
+        try {
+            switch (config.getDatabaseSettings().platform) {
+                case H2:
+                    Class.forName("org.h2.Driver");
+                    break;
+                case POSTGRES:
+                    Class.forName("org.postgresql.Driver");
+                    break;
+                case MYSQL:
+                    Class.forName("com.mysql.cj.jdbc.Driver");
+                    break;
+            }
+        } catch (ClassNotFoundException e) {
+            e.printStackTrace();
+            return null;
+        }
+
+
+        // Create Database configurations
+        DataSourceConfig dataSourceConfig = new DataSourceConfig();
+        dataSourceConfig.setUrl(config.getDatabaseSettings().getConnectionUri(plugin.getDataDirectory(), "database"));
+        dataSourceConfig.setUsername(config.getDatabaseSettings().username);
+        dataSourceConfig.setPassword(config.getDatabaseSettings().password);
+
+        if (config.getDatabaseSettings().platform == Platform.SQLITE)
+            dataSourceConfig.setIsolationLevel(Transaction.SERIALIZABLE);
+
+        DatabaseConfig dbConfig = new DatabaseConfig();
+        dbConfig.setDataSourceConfig(dataSourceConfig);
+        dbConfig.setDefaultServer(true);
+        dbConfig.setClasses(ImmutableList.of(PlayerInfo.class, Verification.class));
+
+        // Set the current class loader to the plugin class loader, so we can initialize the database
+        // This is a weird thing we need to do when using spigot specifically
+        ClassLoader previousClassLoader = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(plugin.getClass().getClassLoader());
+
+        // Initialize the database
+        database = DatabaseFactory.create(dbConfig);
+
+        // Run available migrations
+        MigrationConfig migrationConfig = new MigrationConfig();
+        migrationConfig.setMigrationPath("classpath:/dbmigration/" + config.getDatabaseSettings().platform.toString().toLowerCase());
+        migrationConfig.load(new Properties());
+        MigrationRunner runner = new MigrationRunner(migrationConfig);
+        runner.run(database.dataSource());
+
+        // Set the original class loader back
+        Thread.currentThread().setContextClassLoader(previousClassLoader);
+
+        return database;
+    }
+
+    private Injector createInjector() {
+        Injector injector = new Injector();
+        injector.registerDependency(PlatformPlugin.class, this.plugin);
+        injector.registerNamedDependency("frozenPlayers", frozenPlayers);
+        injector.registerDependency(Config.class, config);
+        injector.registerDependency(Locale.class, locale);
+        injector.registerDependency(Bot.class, bot);
+        return injector;
     }
 
     public void broadcast(String message) {
@@ -133,7 +196,7 @@ public class DiscordLink {
      */
     public void disable(boolean fromPluginShutdown) {
         if (bot != null) bot.shutdown();
-        if (sqliteDB != null) sqliteDB.close();
+        if (database != null) database.shutdown();
 
         // Only call shutdown on the main plugin if shutdown was called within the plugin implementation.
         // This is to prevent a recursive loop of disable being called
@@ -146,10 +209,6 @@ public class DiscordLink {
 
     public Config getConfig() {
         return config;
-    }
-
-    public SqliteDB getDatabase() {
-        return sqliteDB;
     }
 
     public PlatformPlugin getPlugin() {

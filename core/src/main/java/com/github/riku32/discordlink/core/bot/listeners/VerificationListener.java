@@ -3,10 +3,8 @@ package com.github.riku32.discordlink.core.bot.listeners;
 import com.github.riku32.discordlink.core.Constants;
 import com.github.riku32.discordlink.core.DiscordLink;
 import com.github.riku32.discordlink.core.bot.Bot;
-import com.github.riku32.discordlink.core.database.DataException;
-import com.github.riku32.discordlink.core.database.managers.PlayerManager;
-import com.github.riku32.discordlink.core.database.model.PlayerIdentity;
-import com.github.riku32.discordlink.core.database.model.PlayerInfo;
+import com.github.riku32.discordlink.core.database.Verification;
+import com.github.riku32.discordlink.core.database.enums.VerificationType;
 import com.github.riku32.discordlink.core.framework.PlatformPlayer;
 import com.github.riku32.discordlink.core.util.MojangAPI;
 import com.github.riku32.discordlink.core.util.TextUtil;
@@ -18,19 +16,16 @@ import net.dv8tion.jda.api.interactions.components.ActionRow;
 import net.dv8tion.jda.api.interactions.components.Button;
 
 import java.util.Objects;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 public class VerificationListener extends ListenerAdapter {
     private final Bot bot;
     private final DiscordLink plugin;
-    private final PlayerManager playerManager;
     private final MojangAPI mojangAPI = new MojangAPI();
 
     public VerificationListener(Bot bot, DiscordLink plugin) {
         this.bot = bot;
         this.plugin = plugin;
-        this.playerManager = plugin.getDatabase();
     }
 
     public void onButtonClick(ButtonClickEvent event) {
@@ -43,36 +38,29 @@ public class VerificationListener extends ListenerAdapter {
                     .setActionRows(ActionRow.of(event.getMessage().getButtons().stream().map(Button::asDisabled).collect(Collectors.toList())
                     )).build()).queue();
 
-            Optional<PlayerInfo> optionalPlayerInfo;
-            try {
-                optionalPlayerInfo = playerManager.getPlayerInfo(PlayerIdentity.from(event.getUser().getId()));
-            } catch (DataException exception) {
-                exception.printStackTrace();
-                return;
-            }
+            Verification verification;
+            var optionalVerification = Verification.find.byValueAndType(VerificationType.MESSAGE_REACTION, event.getMessageId());
 
             // If the player didn't exist or was verified then something weird happened
             // Just acknowledge the interaction and ignore since the ActionRows already greyed
-            if (optionalPlayerInfo.isEmpty()) {
+            if (optionalVerification.isEmpty()) {
                 event.deferEdit().queue();
                 return;
             }
 
-            PlayerInfo playerInfo = optionalPlayerInfo.get();
-            if (playerInfo.isVerified()) {
+            verification = optionalVerification.get();
+
+            // If the player was verified we should delete the verification, it should not exist
+            if (verification.player.verified) {
+                verification.delete();
                 event.deferEdit().queue();
                 return;
             }
 
-            try {
-                if (!playerManager.getVerificationMessage(PlayerIdentity.from(playerInfo.getDiscordID())).equals(event.getMessageId()))
-                    return;
-            } catch (DataException exception) {
-                exception.printStackTrace();
+            if (!verification.value.equals(event.getMessageId()))
                 return;
-            }
 
-            mojangAPI.getName(playerInfo.getUuid(), name -> {
+            mojangAPI.getName(verification.player.uuid, name -> {
                 switch (event.getComponentId()) {
                     case "link.verify": {
                         event.replyEmbeds(new EmbedBuilder()
@@ -81,15 +69,15 @@ public class VerificationListener extends ListenerAdapter {
                                 .setColor(Constants.Colors.SUCCESS)
                                 .build()).queue();
 
-                        try {
-                            playerManager.verifyPlayer(PlayerIdentity.from(playerInfo.getUuid()));
-                        } catch (DataException exception) {
-                            exception.printStackTrace();
-                        }
+                        // Verify the player
+                        verification.player
+                                .setVerified(true)
+                                .save();
 
-                        PlatformPlayer player = plugin.getPlugin().getPlayer(playerInfo.getUuid());
+                        PlatformPlayer player = plugin.getPlugin().getPlayer(verification.player.uuid);
                         if (player != null) {
                             player.sendMessage(TextUtil.colorize(String.format("&7Your minecraft account has been linked to &e%s", event.getUser().getAsTag())));
+                            verification.delete(); // Delete the verification once we verify
 
                             plugin.getFrozenPlayers().remove(player);
 
@@ -125,16 +113,11 @@ public class VerificationListener extends ListenerAdapter {
                                 .setColor(Constants.Colors.FAIL)
                                 .build()).queue();
 
-                        PlatformPlayer player = plugin.getPlugin().getPlayer(playerInfo.getUuid());
-                        if (player != null) {
+                        PlatformPlayer player = plugin.getPlugin().getPlayer(verification.player.uuid);
+                        if (player != null)
                             player.sendMessage(TextUtil.colorize(String.format("&e%s&7 has cancelled the linking process", event.getUser().getAsTag())));
-                        }
 
-                        try {
-                            playerManager.deletePlayer(PlayerIdentity.from(playerInfo.getUuid()));
-                        } catch (DataException exception) {
-                            exception.printStackTrace();
-                        }
+                        verification.player.delete();
                     }
                 }
             }, null);
