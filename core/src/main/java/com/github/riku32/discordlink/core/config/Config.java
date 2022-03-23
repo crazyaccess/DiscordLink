@@ -5,6 +5,7 @@ import org.simpleyaml.configuration.file.YamlFile;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 
 public class Config {
     private final String token;
@@ -49,6 +50,8 @@ public class Config {
     private final boolean verifySpawn;
     private final boolean allowUnlink;
 
+    private final boolean debugLog;
+
     private final DatabaseSettings databaseSettings;
 
     /**
@@ -61,6 +64,8 @@ public class Config {
         InputStream stream = new ByteArrayInputStream(configContent.getBytes(StandardCharsets.UTF_8));
         YamlFile configuration = YamlFile.loadConfiguration(stream);
         stream.close();
+
+        debugLog = (boolean) Optional.ofNullable(configuration.get("debug")).orElse(false);
 
         token = getAsStringNotNull(configuration, "discord.token");
         serverID = getAsStringNotNull(configuration, "discord.server_id");
@@ -161,12 +166,16 @@ public class Config {
         kickToS = getAsStringNotNull(configuration, "kick_messages.tos");
     }
 
-    private String getAsStringNotNull(YamlFile config, String path) throws NoSuchElementException {
+    private static String getAsStringNotNull(YamlFile config, String path) throws NoSuchElementException {
         Object value = config.get(path);
         if (value == null)
             throw new NoSuchElementException(path + " was not found in the config");
 
         return String.valueOf(value);
+    }
+
+    public boolean isDebugLog() {
+        return debugLog;
     }
 
     public String getToken() {

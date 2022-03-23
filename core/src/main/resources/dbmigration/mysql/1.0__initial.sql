@@ -13,9 +13,9 @@ create table verifications (
   id                            bigint auto_increment not null,
   player_id                     bigint not null,
   type                          varchar(16) comment 'Type of verification',
-  value                         varchar(255) comment 'Value of the verification, this is a messageId in message_reaction and a code in code',
+  verification_value            varchar(255) comment 'Value of the verification, this is a messageId in message_reaction and a code in code',
   constraint uq_verifications_player_id unique (player_id),
-  constraint uq_verifications_value unique (value),
+  constraint uq_verifications_verification_value unique (verification_value),
   constraint pk_verifications primary key (id)
 );
 

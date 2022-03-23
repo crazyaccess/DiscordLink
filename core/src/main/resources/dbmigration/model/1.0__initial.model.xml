@@ -11,7 +11,7 @@
             <column name="id" type="bigint" primaryKey="true"/>
             <column name="player_id" type="bigint" notnull="true" uniqueOneToOne="uq_verifications_player_id" references="players.id" foreignKeyName="fk_verifications_player_id" foreignKeyOnDelete="CASCADE" foreignKeyOnUpdate="RESTRICT"/>
             <column name="type" type="varchar(16)" checkConstraint="check ( type in ('message_reaction','code'))" checkConstraintName="ck_verifications_type" comment="Type of verification"/>
-            <column name="value" type="varchar" unique="uq_verifications_value" comment="Value of the verification, this is a messageId in message_reaction and a code in code"/>
+            <column name="verification_value" type="varchar" unique="uq_verifications_verification_value" comment="Value of the verification, this is a messageId in message_reaction and a code in code"/>
         </createTable>
     </changeSet>
 </migration>
